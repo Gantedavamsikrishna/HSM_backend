@@ -1,36 +1,39 @@
-const jwt = require('jsonwebtoken');
-const { pool } = require('../config/database');
+const jwt = require("jsonwebtoken");
+const User = require("../models/User");
 
 const authenticateToken = async (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+  console.log("authenticateToken middleware reached");
+
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1]; // Bearer TOKEN
+  console.log("Token received in middleware:", token);
 
   if (!token) {
-    return res.status(401).json({ message: 'Access token required' });
+    return res.status(401).json({ message: "Access token required" });
   }
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
-  
-    const [users] = await pool.execute(
-      'SELECT id, email, first_name, last_name, role, is_active FROM users WHERE id = ?',
-      [decoded.userId]
+    console.log("jwt.verify succeeded");
+    // Always log the decoded payload for debugging
+    console.log("Decoded JWT payload:", JSON.stringify(decoded, null, 2));
+    // Use decoded.id (not decoded.userId) based on your JWT payload
+    const user = await User.findById(decoded.id).select(
+      "id email first_name last_name role is_active phone"
     );
-
-    if (users.length === 0 || !users[0].is_active) {
-      return res.status(401).json({ message: 'Invalid or inactive user' });
+    if (!user || user.is_active === false) {
+      return res.status(401).json({ message: "Invalid or inactive user" });
     }
-
-    req.user = users[0];
+    req.user = user;
     next();
   } catch (error) {
-    if (error.name === 'TokenExpiredError') {
-      return res.status(401).json({ message: 'Token expired' });
-    } else if (error.name === 'JsonWebTokenError') {
-      return res.status(401).json({ message: 'Invalid token' });
+    console.error("authenticateToken CATCH BLOCK error:", error);
+    if (error.name === "TokenExpiredError") {
+      return res.status(401).json({ message: "Token expired" });
+    } else if (error.name === "JsonWebTokenError") {
+      return res.status(401).json({ message: "Invalid token" });
     } else {
-      return res.status(500).json({ message: 'Token verification failed' });
+      return res.status(500).json({ message: "Token verification failed" });
     }
   }
 };
@@ -38,14 +41,14 @@ const authenticateToken = async (req, res, next) => {
 const requireRole = (roles) => {
   return (req, res, next) => {
     if (!req.user) {
-      return res.status(401).json({ message: 'Authentication required' });
+      return res.status(401).json({ message: "Authentication required" });
     }
 
     if (!roles.includes(req.user.role)) {
-      return res.status(403).json({ 
-        message: 'Insufficient permissions',
+      return res.status(403).json({
+        message: "Insufficient permissions",
         required: roles,
-        current: req.user.role
+        current: req.user.role,
       });
     }
 
@@ -53,10 +56,10 @@ const requireRole = (roles) => {
   };
 };
 
-const requireAdmin = requireRole(['admin']);
-const requireDoctor = requireRole(['admin', 'doctor']);
-const requireReception = requireRole(['admin', 'reception']);
-const requireLab = requireRole(['admin', 'lab']);
+const requireAdmin = requireRole(["admin"]);
+const requireDoctor = requireRole(["admin", "doctor"]);
+const requireReception = requireRole(["admin", "reception"]);
+const requireLab = requireRole(["admin", "lab"]);
 
 module.exports = {
   authenticateToken,
@@ -64,5 +67,5 @@ module.exports = {
   requireAdmin,
   requireDoctor,
   requireReception,
-  requireLab
+  requireLab,
 };

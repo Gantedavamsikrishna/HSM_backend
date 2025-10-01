@@ -1,80 +1,83 @@
 // Bill Repository (DB access for bills)
 const { v4: uuidv4 } = require("uuid");
-const { pool } = require("../config/database");
+const Bill = require("../models/Bill");
+const Patient = require("../models/Patient");
+const Doctor = require("../models/Doctor");
+const User = require("../models/User");
 
 const billRepository = {
   async getAll({ page = 1, limit = 10, search = "", status = "" }) {
-    const offset = (page - 1) * limit;
-    let query = `
-      SELECT b.id, b.patient_id, b.doctor_id, b.total_amount, b.paid_amount, 
-             b.status, b.payment_method, b.notes, b.created_at,
-             p.first_name as patient_first_name, p.last_name as patient_last_name,
-             p.email as patient_email, p.phone as patient_phone,
-             d.specialization, u.first_name as doctor_first_name, u.last_name as doctor_last_name
-      FROM bills b
-      JOIN patients p ON b.patient_id = p.id
-      LEFT JOIN doctors d ON b.doctor_id = d.id
-      LEFT JOIN users u ON d.user_id = u.id
-      WHERE 1=1
-    `;
-    let params = [];
-    let paramIdx = 1;
-    if (search) {
-      query += ` AND (b.id ILIKE $${paramIdx} OR p.first_name ILIKE $${
-        paramIdx + 1
-      } OR p.last_name ILIKE $${paramIdx + 2} OR p.email ILIKE $${
-        paramIdx + 3
-      })`;
-      const searchPattern = `%${search}%`;
-      params.push(searchPattern, searchPattern, searchPattern, searchPattern);
-      paramIdx += 4;
-    }
+    const filter = {};
     if (status) {
-      query += ` AND b.status = $${paramIdx}`;
-      params.push(status);
-      paramIdx++;
+      filter.status = status;
     }
-    query += ` ORDER BY b.created_at DESC LIMIT $${paramIdx} OFFSET $${
-      paramIdx + 1
-    }`;
-    params.push(limit, offset);
-    const { rows: bills } = await pool.query(query, params);
-    for (let bill of bills) {
-      const { rows: items } = await pool.query(
-        "SELECT * FROM bill_items WHERE bill_id = $1",
-        [bill.id]
-      );
-      bill.items = items;
-    }
-    // Count query
-    let countQuery = `SELECT COUNT(*) as total FROM bills b JOIN patients p ON b.patient_id = p.id WHERE 1=1`;
-    let countParams = [];
-    let countIdx = 1;
+    // For search, we need to search in bill _id, patient first/last name, patient email
+    let patientIds = [];
     if (search) {
-      countQuery += ` AND (b.id ILIKE $${countIdx} OR p.first_name ILIKE $${
-        countIdx + 1
-      } OR p.last_name ILIKE $${countIdx + 2} OR p.email ILIKE $${
-        countIdx + 3
-      })`;
-      const searchPattern = `%${search}%`;
-      countParams.push(
-        searchPattern,
-        searchPattern,
-        searchPattern,
-        searchPattern
-      );
-      countIdx += 4;
+      // Find matching patients
+      const patientFilter = {
+        $or: [
+          { firstName: { $regex: search, $options: "i" } },
+          { lastName: { $regex: search, $options: "i" } },
+          { email: { $regex: search, $options: "i" } },
+        ],
+      };
+      const patients = await Patient.find(patientFilter).select("_id");
+      patientIds = patients.map((p) => p._id);
+      filter.$or = [
+        { _id: { $regex: search, $options: "i" } },
+        { patientId: { $in: patientIds } },
+      ];
     }
-    if (status) {
-      countQuery += ` AND b.status = $${countIdx}`;
-      countParams.push(status);
-      countIdx++;
-    }
-    const { rows: countResult } = await pool.query(countQuery, countParams);
-    const total = countResult[0].total;
+    const skip = (page - 1) * limit;
+    const [bills, total] = await Promise.all([
+      Bill.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate({
+          path: "patientId",
+          select: "firstName lastName email phone",
+        })
+        .populate({
+          path: "doctorId",
+          select: "specialization userId",
+          populate: {
+            path: "userId",
+            select: "first_name last_name",
+            model: "User",
+          },
+        }),
+      Bill.countDocuments(filter),
+    ]);
     const totalPages = Math.ceil(total / limit);
+    // Format bills to match old SQL output
+    const formattedBills = bills.map((bill) => {
+      const patient = bill.patientId;
+      const doctor = bill.doctorId;
+      const doctorUser = doctor && doctor.userId ? doctor.userId : null;
+      return {
+        id: bill._id,
+        patient_id: patient ? patient._id : null,
+        doctor_id: doctor ? doctor._id : null,
+        total_amount: bill.totalAmount,
+        paid_amount: bill.paidAmount,
+        status: bill.status,
+        payment_method: bill.paymentMethod,
+        notes: bill.notes,
+        created_at: bill.createdAt,
+        patient_first_name: patient ? patient.firstName : null,
+        patient_last_name: patient ? patient.lastName : null,
+        patient_email: patient ? patient.email : null,
+        patient_phone: patient ? patient.phone : null,
+        specialization: doctor ? doctor.specialization : null,
+        doctor_first_name: doctorUser ? doctorUser.first_name : null,
+        doctor_last_name: doctorUser ? doctorUser.last_name : null,
+        items: bill.items || [],
+      };
+    });
     return {
-      bills,
+      bills: formattedBills,
       pagination: {
         currentPage: page,
         totalPages,
@@ -87,25 +90,44 @@ const billRepository = {
   },
 
   async getById(id) {
-    const { rows: bills } = await pool.query(
-      `SELECT b.*, p.first_name as patient_first_name, p.last_name as patient_last_name,
-              p.email as patient_email, p.phone as patient_phone, p.address as patient_address,
-              d.specialization, u.first_name as doctor_first_name, u.last_name as doctor_last_name
-       FROM bills b
-       JOIN patients p ON b.patient_id = p.id
-       LEFT JOIN doctors d ON b.doctor_id = d.id
-       LEFT JOIN users u ON d.user_id = u.id
-       WHERE b.id = $1`,
-      [id]
-    );
-    if (bills.length === 0) return null;
-    const bill = bills[0];
-    const { rows: items } = await pool.query(
-      "SELECT * FROM bill_items WHERE bill_id = $1",
-      [id]
-    );
-    bill.items = items;
-    return bill;
+    const bill = await Bill.findById(id)
+      .populate({
+        path: "patientId",
+        select: "firstName lastName email phone address",
+      })
+      .populate({
+        path: "doctorId",
+        select: "specialization userId",
+        populate: {
+          path: "userId",
+          select: "first_name last_name",
+          model: "User",
+        },
+      });
+    if (!bill) return null;
+    const patient = bill.patientId;
+    const doctor = bill.doctorId;
+    const doctorUser = doctor && doctor.userId ? doctor.userId : null;
+    return {
+      id: bill._id,
+      patient_id: patient ? patient._id : null,
+      doctor_id: doctor ? doctor._id : null,
+      total_amount: bill.totalAmount,
+      paid_amount: bill.paidAmount,
+      status: bill.status,
+      payment_method: bill.paymentMethod,
+      notes: bill.notes,
+      created_at: bill.createdAt,
+      patient_first_name: patient ? patient.firstName : null,
+      patient_last_name: patient ? patient.lastName : null,
+      patient_email: patient ? patient.email : null,
+      patient_phone: patient ? patient.phone : null,
+      patient_address: patient ? patient.address : null,
+      specialization: doctor ? doctor.specialization : null,
+      doctor_first_name: doctorUser ? doctorUser.first_name : null,
+      doctor_last_name: doctorUser ? doctorUser.last_name : null,
+      items: bill.items || [],
+    };
   },
 
   async create({ patientId, doctorId, items, paymentMethod, notes }) {

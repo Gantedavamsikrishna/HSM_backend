@@ -4,6 +4,8 @@ const dotenv = require("dotenv");
 const path = require("path");
 const { testConnection } = require("./config/database");
 
+const insertDefaultUsers = require("./insertDefaultUsers");
+
 dotenv.config();
 
 const app = express();
@@ -49,6 +51,8 @@ const startServer = async () => {
 
     // Database schema initialization should be handled by migrations or manually.
 
+    // Insert default users if DB is empty
+    await insertDefaultUsers();
     // Start server
     app.listen(PORT, () => {
       console.log(` Server running on port ${PORT}`);

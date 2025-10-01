@@ -1,55 +1,25 @@
 // Patient Repository (DB access)
-const { v4: uuidv4 } = require("uuid");
-const { pool } = require("../config/database");
+const Patient = require("../models/Patient");
 
 module.exports = {
   async getAll({ page = 1, limit = 10, search = "", gender = "" }) {
-    const offset = (page - 1) * limit;
-    let query = `SELECT id, first_name, last_name, email, phone, date_of_birth, gender, address, emergency_contact, emergency_phone, medical_history, allergies, blood_group, created_at, updated_at FROM patients WHERE 1=1`;
-    let params = [];
-    let paramIdx = 1;
+    const filter = {};
     if (search) {
-      query += ` AND (first_name ILIKE $${paramIdx} OR last_name ILIKE $${
-        paramIdx + 1
-      } OR email ILIKE $${paramIdx + 2} OR phone ILIKE $${paramIdx + 3})`;
-      const searchPattern = `%${search}%`;
-      params.push(searchPattern, searchPattern, searchPattern, searchPattern);
-      paramIdx += 4;
+      filter.$or = [
+        { firstName: { $regex: search, $options: "i" } },
+        { lastName: { $regex: search, $options: "i" } },
+        { email: { $regex: search, $options: "i" } },
+        { phone: { $regex: search, $options: "i" } },
+      ];
     }
     if (gender) {
-      query += ` AND gender = $${paramIdx}`;
-      params.push(gender);
-      paramIdx++;
+      filter.gender = gender;
     }
-    query += ` ORDER BY created_at DESC LIMIT $${paramIdx} OFFSET $${
-      paramIdx + 1
-    }`;
-    params.push(limit, offset);
-    const { rows: patients } = await pool.query(query, params);
-    // Get total count for pagination
-    let countQuery = `SELECT COUNT(*) as total FROM patients WHERE 1=1`;
-    let countParams = [];
-    let countIdx = 1;
-    if (search) {
-      countQuery += ` AND (first_name ILIKE $${countIdx} OR last_name ILIKE $${
-        countIdx + 1
-      } OR email ILIKE $${countIdx + 2} OR phone ILIKE $${countIdx + 3})`;
-      const searchPattern = `%${search}%`;
-      countParams.push(
-        searchPattern,
-        searchPattern,
-        searchPattern,
-        searchPattern
-      );
-      countIdx += 4;
-    }
-    if (gender) {
-      countQuery += ` AND gender = $${countIdx}`;
-      countParams.push(gender);
-      countIdx++;
-    }
-    const { rows: countResult } = await pool.query(countQuery, countParams);
-    const total = countResult[0].total;
+    const skip = (page - 1) * limit;
+    const [patients, total] = await Promise.all([
+      Patient.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
+      Patient.countDocuments(filter),
+    ]);
     const totalPages = Math.ceil(total / limit);
     return {
       patients,
@@ -73,44 +43,23 @@ module.exports = {
   },
 
   async create(data) {
-    const {
-      firstName,
-      lastName,
-      email,
-      phone,
-      dateOfBirth,
-      gender,
-      address,
-      emergencyContact,
-      emergencyPhone,
-      medicalHistory,
-      allergies,
-      bloodGroup,
-    } = data;
-    const patientId = uuidv4();
-    await pool.query(
-      `INSERT INTO patients (id, first_name, last_name, email, phone, date_of_birth, gender, address, emergency_contact, emergency_phone, medical_history, allergies, blood_group) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-      [
-        patientId,
-        firstName,
-        lastName,
-        email,
-        phone,
-        dateOfBirth,
-        gender,
-        address,
-        emergencyContact,
-        emergencyPhone,
-        medicalHistory || null,
-        allergies || null,
-        bloodGroup || null,
-      ]
-    );
-    const { rows: newPatients } = await pool.query(
-      "SELECT * FROM patients WHERE id = $1",
-      [patientId]
-    );
-    return newPatients[0];
+    // Create a new patient using the Mongoose Patient model
+    const patient = new Patient({
+      firstName: data.firstName,
+      lastName: data.lastName,
+      email: data.email,
+      phone: data.phone,
+      dateOfBirth: data.dateOfBirth,
+      gender: data.gender,
+      address: data.address,
+      emergencyContact: data.emergencyContact,
+      emergencyPhone: data.emergencyPhone,
+      medicalHistory: data.medicalHistory,
+      allergies: data.allergies,
+      bloodGroup: data.bloodGroup,
+    });
+    await patient.save();
+    return patient;
   },
 
   async update(id, data) {

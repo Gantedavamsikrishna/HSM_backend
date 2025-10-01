@@ -1,135 +1,40 @@
 const express = require("express");
-const { v4: uuidv4 } = require("uuid");
-const { pool } = require("../config/database");
 const { authenticateToken, requireRole } = require("../middleware/auth");
+const appointmentsController = require("../controllers/appointmentsController");
 
 const router = express.Router();
 
-router.get("/", authenticateToken, async (req, res) => {
-  try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const search = req.query.search || "";
-    const status = req.query.status || "";
-    const doctorId = req.query.doctor_id || "";
-    const date = req.query.date || "";
-    const offset = (page - 1) * limit;
+// Get all appointments
+router.get("/", authenticateToken, appointmentsController.getAll);
 
-    let query = `
-      SELECT a.id, a.patient_id, a.doctor_id, a.date_time, a.status, a.reason, a.notes, a.created_at,
-             p.first_name as patient_first_name, p.last_name as patient_last_name,
-             p.email as patient_email, p.phone as patient_phone,
-             d.specialization, u.first_name as doctor_first_name, u.last_name as doctor_last_name
-      FROM appointments a
-      JOIN patients p ON a.patient_id = p.id
-      JOIN doctors d ON a.doctor_id = d.id
-      JOIN users u ON d.user_id = u.id
-      WHERE 1=1
-    `;
-    let params = [];
+// Get single appointment by ID
+router.get("/:id", authenticateToken, appointmentsController.getById);
 
-    if (search) {
-      query += ` AND (p.first_name LIKE ? OR p.last_name LIKE ? OR p.email LIKE ? OR p.phone LIKE ?)`;
-      const searchPattern = `%${search}%`;
-      params.push(searchPattern, searchPattern, searchPattern, searchPattern);
-    }
+// Create new appointment (Reception and Admin only)
+router.post(
+  "/",
+  authenticateToken,
+  requireRole(["admin", "reception"]),
+  appointmentsController.create
+);
 
-    if (status) {
-      query += ` AND a.status = ?`;
-      params.push(status);
-    }
+// Update appointment (Reception and Admin only)
+router.put(
+  "/:id",
+  authenticateToken,
+  requireRole(["admin", "reception"]),
+  appointmentsController.update
+);
 
-    if (doctorId) {
-      query += ` AND a.doctor_id = ?`;
-      params.push(doctorId);
-    }
+// Delete appointment (Admin only)
+router.delete(
+  "/:id",
+  authenticateToken,
+  requireRole(["admin"]),
+  appointmentsController.remove
+);
 
-    if (date) {
-      query += ` AND DATE(a.date_time) = ?`;
-      params.push(date);
-    }
-
-    if (req.user.role === "doctor") {
-      const [doctorRecord] = await pool.execute(
-        "SELECT id FROM doctors WHERE user_id = ?",
-        [req.user.id]
-      );
-      if (doctorRecord.length > 0) {
-        query += ` AND a.doctor_id = ?`;
-        params.push(doctorRecord[0].id);
-      }
-    }
-
-    query += ` ORDER BY a.date_time DESC LIMIT ${limit} OFFSET ${offset}`;
-
-    const [appointments] = await pool.execute(query, params);
-
-    let countQuery = `
-      SELECT COUNT(*) as total FROM appointments a
-      JOIN patients p ON a.patient_id = p.id
-      JOIN doctors d ON a.doctor_id = d.id
-      JOIN users u ON d.user_id = u.id
-      WHERE 1=1
-    `;
-    let countParams = [];
-
-    if (search) {
-      countQuery += ` AND (p.first_name LIKE ? OR p.last_name LIKE ? OR p.email LIKE ? OR p.phone LIKE ?)`;
-      const searchPattern = `%${search}%`;
-      countParams.push(
-        searchPattern,
-        searchPattern,
-        searchPattern,
-        searchPattern
-      );
-    }
-
-    if (status) {
-      countQuery += ` AND a.status = ?`;
-      countParams.push(status);
-    }
-
-    if (doctorId) {
-      countQuery += ` AND a.doctor_id = ?`;
-      countParams.push(doctorId);
-    }
-
-    if (date) {
-      countQuery += ` AND DATE(a.date_time) = ?`;
-      countParams.push(date);
-    }
-
-    if (req.user.role === "doctor") {
-      const [doctorRecord] = await pool.execute(
-        "SELECT id FROM doctors WHERE user_id = ?",
-        [req.user.id]
-      );
-      if (doctorRecord.length > 0) {
-        countQuery += ` AND a.doctor_id = ?`;
-        countParams.push(doctorRecord[0].id);
-      }
-    }
-
-    const [countResult] = await pool.execute(countQuery, countParams);
-    const total = countResult[0].total;
-    const totalPages = Math.ceil(total / limit);
-
-    res.json({
-      appointments,
-      pagination: {
-        currentPage: page,
-        totalPages,
-        totalItems: total,
-        itemsPerPage: limit,
-        hasNextPage: page < totalPages,
-        hasPrevPage: page > 1,
-      },
-    });
-  } catch (error) {
-    console.error("Get appointments error:", error);
-    res.status(500).json({ message: "Failed to fetch appointments" });
-  }
-});
+module.exports = router;
 
 // Get single appointment by ID
 router.get("/:id", authenticateToken, async (req, res) => {

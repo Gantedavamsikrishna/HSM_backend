@@ -1,6 +1,8 @@
 const express = require("express");
 const { v4: uuidv4 } = require("uuid");
-const { pool } = require("../config/database");
+const Bill = require("../models/Bill");
+const Patient = require("../models/Patient");
+const Doctor = require("../models/Doctor");
 const { authenticateToken, requireRole } = require("../middleware/auth");
 const billsController = require("../controllers/billsController");
 
@@ -94,6 +96,58 @@ router.get("/", authenticateToken, async (req, res) => {
     res.status(500).json({ message: "Failed to fetch bills" });
   }
 });
+router.get("/", authenticateToken, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const search = req.query.search || "";
+    const status = req.query.status || "";
+    const skip = (page - 1) * limit;
+
+    let query = {};
+    if (search) {
+      const regex = new RegExp(search, "i");
+      query.$or = [
+        { _id: search.match(/^[a-f\d]{24}$/i) ? search : undefined },
+        { notes: regex },
+      ];
+      // Remove undefined if _id is not a valid ObjectId
+      query.$or = query.$or.filter(Boolean);
+    }
+    if (status) {
+      query.status = status;
+    }
+
+    const bills = await Bill.find(query)
+      .populate({
+        path: "patientId",
+        select: "first_name last_name email phone",
+      })
+      .populate({ path: "doctorId", select: "specialization" })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    const total = await Bill.countDocuments(query);
+    const totalPages = Math.ceil(total / limit);
+
+    res.json({
+      bills,
+      pagination: {
+        currentPage: page,
+        totalPages,
+        totalItems: total,
+        itemsPerPage: limit,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1,
+      },
+    });
+  } catch (error) {
+    console.error("Get bills error:", error);
+    res.status(500).json({ message: "Failed to fetch bills" });
+  }
+});
 router.get("/", authenticateToken, billsController.getAll);
 
 router.get("/:id", authenticateToken, async (req, res) => {
@@ -128,6 +182,25 @@ router.get("/:id", authenticateToken, async (req, res) => {
     res.json({ bill });
   } catch (error) {
     console.error("Get bill error:", error);
+    res.status(500).json({ message: "Failed to fetch bill" });
+  }
+});
+router.get("/:id", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const bill = await Bill.findById(id)
+      .populate({
+        path: "patientId",
+        select: "first_name last_name email phone address",
+      })
+      .populate({ path: "doctorId", select: "specialization" })
+      .lean();
+    if (!bill) {
+      return res.status(404).json({ message: "Bill not found" });
+    }
+    res.json({ bill });
+  } catch (error) {
+    console.error("Get bill by id error:", error);
     res.status(500).json({ message: "Failed to fetch bill" });
   }
 });
